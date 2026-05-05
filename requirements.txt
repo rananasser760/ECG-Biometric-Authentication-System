@@ -1,0 +1,6 @@
+numpy
+wfdb
+pywavelets
+scipy
+scikit-learn
+pillow
