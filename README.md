@@ -40,18 +40,21 @@ The system evaluates multiple combinations of wavelets and classifiers.
 
 - The dataset consists of ECG records stored in **WFDB format** (`.atr`, `.dat`, `.hea`)
 - Data is organized per subject:
-    `data/
-        Person_1/
-              rec_1.atr
-              rec_1.dat
-              rec_1.hea
-              ...
-        Person_2/
-              rec_1.atr
-              rec_1.dat
-              rec_1.hea
-              ...
-        ...`
+    
+```bash
+data/
+├── Person_1/
+│   ├── rec_1.atr
+│   ├── rec_1.dat
+│   ├── rec_1.hea
+│   └── ...
+├── Person_2/
+│   ├── rec_1.atr
+│   ├── rec_1.dat
+│   ├── rec_1.hea
+│   └── ...
+└── ...
+```
 
 ### Notes
 - The dataset is **open-source and lightweight from Physionet**
@@ -120,6 +123,7 @@ pip install -r requirements.txt
 - python main.py
 
 ## Project Structure
+```bash
 ECG-Biometric-Authentication/
 │
 ├── data/            # ECG dataset (WFDB format)
@@ -128,7 +132,7 @@ ECG-Biometric-Authentication/
 ├── requirements.txt
 ├── README.md
 ├── .gitignore
-
+```
 
 ## Team Members:
 - Rana Nasser
