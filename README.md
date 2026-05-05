@@ -1,9 +1,7 @@
-# 🫀 ECG Biometric Authentication System
+# 💓🔐 ECG Biometric Authentication System
 
 An ECG-based biometric authentication system that identifies individuals using their heart signals.  
 This project combines signal processing, wavelet feature extraction, and machine learning, wrapped in an interactive GUI.
-
-> 🎓 Developed as part of the **Human-Computer Interaction (HCI)** course.
 
 ---
 
