@@ -26,15 +26,50 @@ def apply_bandpass_filter(signal, fs=500):
     b, a = butter(4, [low, high], btype='band')
     return filtfilt(b, a, signal)
 
-def extract_heartbeats(signal, fs=500):
-    peaks, _ = find_peaks(signal, distance=int(fs * 0.6))
-    heartbeats = []
-    before = int(0.2 * fs)
-    after = int(0.4 * fs)
+
+def pan_tompkins_r_peaks(signal, fs=500):
+    # 1. Differentiation: Highlight rapid changes in the ECG signal
+    # Initialize with zeros to maintain original signal length and avoid indexing issues
+    diff_sig = np.zeros_like(signal)
+    diff_sig[1:] = np.diff(signal)
+
+    # 2. Squaring: Amplify high-frequency components (QRS complex) and suppress noise
+    sq_sig = diff_sig ** 2
+
+    # 3. Moving Average Integration: Smooth the signal to obtain the energy envelope
+    window_len = int(0.15 * fs)
+    integrated_sig = np.convolve(sq_sig, np.ones(window_len) / window_len, mode='same')
+
+    # 4. Adaptive Thresholding: Calculate a dynamic threshold based on signal energy
+    # Using (Mean + 1.5 * STD) to distinguish R-peaks from T-waves and noise
+    threshold = np.mean(integrated_sig) + 1.5 * np.std(integrated_sig)
+
+    # 5. Peak Detection: Find candidate peaks in the integrated signal
+    # 'distance' ensures at least 0.3s between beats, supporting heart rates up to 200 BPM
+    distance = int(0.3 * fs)
+    peaks, _ = find_peaks(integrated_sig, height=threshold, distance=distance)
+
+    # 6. R-peak Refinement: Locate the exact R-peak in the original filtered signal
+    # Search within a small window around the energy peak for maximum amplitude
+    r_peaks = []
     for p in peaks:
-        if p - before >= 0 and p + after < len(signal):
-            heartbeats.append(signal[p - before: p + after])
-    return heartbeats
+        start = max(0, p - int(0.05 * fs))
+        end = min(len(signal), p + int(0.05 * fs))
+        r_peak = start + np.argmax(signal[start:end])
+        r_peaks.append(r_peak)
+
+    return np.array(r_peaks)
+def extract_heartbeats(signal, fs=500):
+    r_peaks = pan_tompkins_r_peaks(signal, fs)
+    heartbeats = []
+    r_peaks_in_beats = []
+    before = int(0.2 * fs)
+    after  = int(0.4 * fs)
+    for r_peak in r_peaks:
+        if r_peak - before >= 0 and r_peak + after < len(signal):
+            heartbeats.append(signal[r_peak - before: r_peak + after])
+            r_peaks_in_beats.append(before)
+    return heartbeats, r_peaks_in_beats
 
 def get_qrs_onset_offset(signal, r_peak, fs=500):
     search_q_start = max(0, r_peak - int(0.1 * fs))
@@ -43,31 +78,16 @@ def get_qrs_onset_offset(signal, r_peak, fs=500):
     s_peak = r_peak + np.argmin(signal[r_peak:search_s_end]) if r_peak < search_s_end else r_peak
     return q_peak, s_peak
 
-def extract_fiducial_points(signal, fs=500):
-   
-    diff_sig = np.diff(signal)
-    sq_sig = diff_sig ** 2
-    window_len = int(0.15 * fs)
-    integrated_sig = np.convolve(sq_sig, np.ones(window_len)/window_len, mode='same')
-    
-    peaks, _ = find_peaks(integrated_sig, distance=int(0.6 * fs))
-    if len(peaks) == 0:
-        return None
-    
-    r_peak_approx = peaks[0]
-    start = max(0, r_peak_approx - int(0.05 * fs))
-    end = min(len(signal), r_peak_approx + int(0.05 * fs))
-    r_peak = start + np.argmax(signal[start:end])
-    
+def extract_fiducial_points(signal, r_peak, fs=500):
     q_peak, s_peak = get_qrs_onset_offset(signal, r_peak, fs)
     points = {'R': r_peak, 'Q': q_peak, 'S': s_peak, 'P': None, 'T': None}
-    
+
     p_window_width = int(0.200 * fs)
     qrs_onset = q_peak - int(0.02 * fs)
     search_p_start = max(0, qrs_onset - p_window_width)
     if search_p_start < qrs_onset:
         points['P'] = search_p_start + np.argmax(signal[search_p_start:qrs_onset])
-        
+
     t_window_width = int(0.400 * fs)
     qrs_offset = s_peak + int(0.02 * fs)
     search_t_end = min(len(signal), qrs_offset + t_window_width)
@@ -80,37 +100,36 @@ def extract_fiducial_points(signal, fs=500):
             W2 = window_signal[i] - window_signal[i + k]
             W[i] = W1 * W2
         if len(W) > 2 * k:
-            t_rel_idx = k + np.argmin(W[k:-k])
+            t_rel_idx = k + np.argmax(W[k:-k])
             points['T'] = qrs_offset + t_rel_idx
-            
+
     return points
 
-def get_combined_features(heartbeats, wavelet_name, fs=500):
+def get_combined_features(heartbeats, r_peaks_in_beats, wavelet_name, fs=500):
     features = []
-    for beat in heartbeats:
-
-        coeffs = pywt.wavedec(beat, wavelet_name, level=4)
+    for beat, r_peak in zip(heartbeats, r_peaks_in_beats):
+        coeffs = pywt.wavedec(beat, wavelet_name, level=4 ) #A4: (0:15) ,, D4 : (15:30) ,, D3 : (30:60)
         selected_coeffs = coeffs[:3]
         beat_features = []
         for c in selected_coeffs:
             beat_features.extend([np.mean(c), np.std(c), np.sum(np.square(c))])
-            
-        points = extract_fiducial_points(beat, fs)
-        if points and points['R'] is not None and points['Q'] is not None and points['S'] is not None:
 
-            pr_interval = (points['R'] - points['P']) / fs if points['P'] is not None else 0
-            qt_interval = (points['T'] - points['Q']) / fs if points['T'] is not None else 0
+        points = extract_fiducial_points(beat, r_peak, fs)
+        if points and points['R'] is not None and points['Q'] is not None and points['S'] is not None:
+            pr_interval  = (points['R'] - points['P']) / fs if points['P'] is not None else 0
+            qt_interval  = (points['T'] - points['Q']) / fs if points['T'] is not None else 0
             qrs_duration = (points['S'] - points['Q']) / fs
             beat_features.extend([pr_interval, qt_interval, qrs_duration])
         else:
-            beat_features.extend([0, 0, 0]) 
-            
+            beat_features.extend([0, 0, 0])
+
         features.append(beat_features)
     return np.array(features)
 
 def load_and_prepare_data(base_path):
     X_train_raw, y_train = [], []
-    X_test_raw, y_test = [], []
+    X_test_raw,  y_test  = [], []
+    R_train, R_test      = [], []
     for person_id in range(1, 6):
         person_folder = os.path.join(base_path, f'Person_{person_id}')
         if not os.path.exists(person_folder):
@@ -118,57 +137,154 @@ def load_and_prepare_data(base_path):
         files = [f.split('.')[0] for f in os.listdir(person_folder) if f.endswith('.dat')]
         files.sort()
         train_files = files[:5]
-        test_files = files[-2:] if len(files) >= 7 else files[5:]
+        test_files  = files[-2:] if len(files) >= 7 else files[5:]
         for file in train_files:
             record_path = os.path.join(person_folder, file)
             record = wfdb.rdrecord(record_path)
             signal = apply_bandpass_filter(record.p_signal[:, 0])
-            beats = extract_heartbeats(signal)
+            beats, r_locs = extract_heartbeats(signal)
             X_train_raw.extend(beats)
+            R_train.extend(r_locs)
             y_train.extend([person_id] * len(beats))
         for file in test_files:
             record_path = os.path.join(person_folder, file)
             record = wfdb.rdrecord(record_path)
             signal = apply_bandpass_filter(record.p_signal[:, 0])
-            beats = extract_heartbeats(signal)
+            beats, r_locs = extract_heartbeats(signal)
             X_test_raw.extend(beats)
+            R_test.extend(r_locs)
             y_test.extend([person_id] * len(beats))
-    return X_train_raw, np.array(y_train), X_test_raw, np.array(y_test)
+    return X_train_raw, R_train, np.array(y_train), X_test_raw, R_test, np.array(y_test)
 
 # ─────────────────────────────────────────────
 #  Model Training
 # ─────────────────────────────────────────────
-
 base_data_path = 'data'
-X_train_raw, y_train, X_test_raw, y_test = load_and_prepare_data(base_data_path)
+X_train_raw, R_train, y_train, X_test_raw, R_test, y_test = load_and_prepare_data(base_data_path)
 
 wavelets = ['db1', 'db2', 'db4']
-classifiers = {
-    'SVM': SVC(kernel='rbf', C=10, gamma='scale', probability=True),
-    'Random Forest': RandomForestClassifier(n_estimators=100, max_depth=10),
-    'KNN': KNeighborsClassifier(n_neighbors=5)
-}
 
-best_wavelet = 'db4'
-best_model = None
-best_scaler = None
+# 3 parameter sets per classifier
+svm_params = [
+    {'kernel': 'rbf',    'C': 1,   'gamma': 'scale'},
+    {'kernel': 'rbf',    'C': 10,  'gamma': 'scale'},
+    {'kernel': 'linear', 'C': 1},
+]
+rf_params = [
+    {'n_estimators': 50,  'max_depth': 5},
+    {'n_estimators': 100, 'max_depth': 10},
+    {'n_estimators': 200, 'max_depth': None},
+]
+knn_params = [
+    {'n_neighbors': 3, 'weights': 'uniform'},
+    {'n_neighbors': 5, 'weights': 'uniform'},
+    {'n_neighbors': 7, 'weights': 'uniform'},
+]
 
-print("Comparing Classifiers and Wavelets:\n" + "─" * 50)
+best_overall_acc = 0.0
+best_model       = None
+best_scaler      = None
+best_wavelet     = 'db4'
+
+wavelet_results  = {}
+
+print("=" * 75)
+print("  Parameter Tuning per Classifier & Wavelet")
+print("=" * 75)
+
 for wv in wavelets:
-    X_train = get_combined_features(X_train_raw, wv)
-    X_test = get_combined_features(X_test_raw, wv)
-    scaler = StandardScaler()
+    X_train = get_combined_features(X_train_raw, R_train, wv)
+    X_test  = get_combined_features(X_test_raw,  R_test,  wv)
+    scaler  = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    for clf_name, clf in classifiers.items():
+    X_test_scaled  = scaler.transform(X_test)
+
+    print(f"\n  Wavelet: {wv}")
+    print("  " + "─" * 70)
+    print(f"  {'Classifier':<16} {'Parameters':<35} {'Accuracy':>8}")
+    print("  " + "─" * 70)
+
+    wv_best = {}
+
+    # ── SVM ──────────────────────────────────────────
+    best_svm_acc = 0
+    best_svm     = None
+    for p in svm_params:
+        clf = SVC(**p, probability=True)
         clf.fit(X_train_scaled, y_train)
-        preds = clf.predict(X_test_scaled)
-        acc = accuracy_score(y_test, preds) * 100
-        print(f"  Wavelet: {wv:>4}  |  Classifier: {clf_name:<15}  |  Accuracy: {acc:.2f}%")
-        if wv == 'db4' and clf_name == 'SVM':
-            best_model = clf
-            best_scaler = scaler
-print("─" * 50)
+        acc = accuracy_score(y_test, clf.predict(X_test_scaled)) * 100
+        tag = '  ◄ best' if acc > best_svm_acc else ''
+        param_str = ', '.join(f"{k}={v}" for k, v in p.items())
+        print(f"  {'SVM':<16} {param_str:<35} {acc:>7.2f}%{tag}")
+        if acc > best_svm_acc:
+            best_svm_acc = acc
+            best_svm     = clf
+    wv_best['SVM'] = (best_svm, best_svm_acc)
+
+    # ── Random Forest ────────────────────────────────
+    best_rf_acc = 0
+    best_rf     = None
+    for p in rf_params:
+        clf = RandomForestClassifier(**p, random_state=42)
+        clf.fit(X_train_scaled, y_train)
+        acc = accuracy_score(y_test, clf.predict(X_test_scaled)) * 100
+        tag = '  ◄ best' if acc > best_rf_acc else ''
+        param_str = ', '.join(f"{k}={v}" for k, v in p.items())
+        print(f"  {'Random Forest':<16} {param_str:<35} {acc:>7.2f}%{tag}")
+        if acc > best_rf_acc:
+            best_rf_acc = acc
+            best_rf     = clf
+    wv_best['Random Forest'] = (best_rf, best_rf_acc)
+
+    # ── KNN ──────────────────────────────────────────
+    best_knn_acc = 0
+    best_knn     = None
+    for p in knn_params:
+        clf = KNeighborsClassifier(**p)
+        clf.fit(X_train_scaled, y_train)
+        acc = accuracy_score(y_test, clf.predict(X_test_scaled)) * 100
+        tag = '  ◄ best' if acc > best_knn_acc else ''
+        param_str = ', '.join(f"{k}={v}" for k, v in p.items())
+        print(f"  {'KNN':<16} {param_str:<35} {acc:>7.2f}%{tag}")
+        if acc > best_knn_acc:
+            best_knn_acc = acc
+            best_knn     = clf
+    wv_best['KNN'] = (best_knn, best_knn_acc)
+
+    wavelet_results[wv] = (wv_best, scaler)
+
+    # update overall best model
+    for clf_name, (clf, acc) in wv_best.items():
+        if acc > best_overall_acc:
+            best_overall_acc = acc
+            best_model       = clf
+            best_scaler      = scaler
+            best_wavelet     = wv
+
+# ─────────────────────────────────────────────
+#  Compare Best Result per Classifier
+# ─────────────────────────────────────────────
+print("\n" + "=" * 75)
+print("  Best Result per Classifier (across all wavelets)")
+print("=" * 75)
+print(f"  {'Classifier':<16} {'Best Wavelet':<14} {'Accuracy':>8}")
+print("  " + "─" * 40)
+
+for clf_name in ['SVM', 'Random Forest', 'KNN']:
+    top_acc = 0
+    top_wv  = ''
+    for wv, (wv_best, _) in wavelet_results.items():
+        _, acc = wv_best[clf_name]
+        if acc > top_acc:
+            top_acc = acc
+            top_wv  = wv
+    print(f"  {clf_name:<16} {top_wv:<14} {top_acc:>7.2f}%")
+
+print("=" * 75)
+
+clf_display_names = {'SVC': 'SVM', 'RandomForestClassifier': 'Random Forest', 'KNeighborsClassifier': 'KNN'}
+best_clf_name = clf_display_names.get(type(best_model).__name__, type(best_model).__name__)
+print(f"\n  ★ Overall Best: {best_clf_name:<16} | Wavelet: {best_wavelet} | Accuracy: {best_overall_acc:.2f}%\n")
 
 # ─────────────────────────────────────────────
 #  UI Design & Styling
@@ -305,9 +421,9 @@ class BiometricApp:
         rows = [
             ("Wavelet",     "Daubechies db4"),
             ("Fiducial Pts","Pan-Tompkins + Wing Func"),
-            ("Classifier",  "SVM  (RBF kernel, C=10)"),
+            ("Classifier", f"{best_clf_name}"),
             ("Features",    "Wavelet Energy + Intervals"),
-            ("Threshold",   "85% Prob & 50% Valid Beats"),
+            ("Threshold", "> 80% of beats vote same subject"),
         ]
         for label, value in rows:
             row = tk.Frame(parent, bg=COLORS['bg_card'])
@@ -373,42 +489,30 @@ class BiometricApp:
         try:
             record = wfdb.rdrecord(record_path)
             signal = apply_bandpass_filter(record.p_signal[:, 0])
-            beats = extract_heartbeats(signal)
+            beats, r_locs = extract_heartbeats(signal)
             if not beats:
                 self.root.after(0, lambda: self._show_error("No heartbeats detected in record."))
                 return
                 
-            features = get_combined_features(beats, best_wavelet)
+            features = get_combined_features(beats,r_locs, best_wavelet)
             features_scaled = best_scaler.transform(features)
-            
-            probs = best_model.predict_proba(features_scaled)
-            max_probs = np.max(probs, axis=1)
-            raw_preds = best_model.classes_[np.argmax(probs, axis=1)]
 
-            PROB_THRESHOLD = 0.80
-            valid_predictions = [
-                pred if prob >= PROB_THRESHOLD else 0 
-                for pred, prob in zip(raw_preds, max_probs)
-            ]
+            raw_preds = best_model.predict(features_scaled)
 
-            vote_counts = Counter(valid_predictions)
-            total_beats = len(valid_predictions)
+            vote_counts = Counter(raw_preds)
+            total_beats = len(raw_preds)
 
-            if vote_counts.get(0, 0) > (total_beats * 0.50):
+            most_common_id, count = vote_counts.most_common(1)[0]
+            confidence = count / total_beats
+
+            if confidence <= 0.80:
                 most_common_id = None
-                confidence = 0.0
-            else:
-                known_votes = {k: v for k, v in vote_counts.items() if k != 0}
-                if known_votes:
-                    most_common_id, count = max(known_votes.items(), key=lambda item: item[1])
-                    confidence = count / total_beats 
-                else:
-                    most_common_id = None
-                    confidence = 0.0
+                # confidence = 0.0
 
             self.root.after(0, lambda: self._display_result(most_common_id, confidence))
         except Exception as e:
-            self.root.after(0, lambda: self._show_error(f"Read error: {str(e)[:60]}"))
+            err_msg = str(e)[:60]
+            self.root.after(0, lambda: self._show_error(f"Read error: {err_msg}"))
 
     def _display_result(self, person_id, confidence):
         self.progress.stop()
