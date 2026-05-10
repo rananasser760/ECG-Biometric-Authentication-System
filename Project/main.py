@@ -38,7 +38,7 @@ def pan_tompkins_r_peaks(signal, fs=500):
     diff_sig[1:] = np.diff(signal)
     sq_sig = diff_sig ** 2
     window_len = int(0.15 * fs)
-    integrated_sig = np.convolve(sq_sig, np.ones(window_len) / window_len, mode='same')
+    integrated_sig = np.convolve(sq_sig, np.ones(window_len) / window_len, mode='same') 
     threshold = np.mean(integrated_sig) + 1.5 * np.std(integrated_sig)
     distance = int(0.3 * fs)
     peaks, _ = find_peaks(integrated_sig, height=threshold, distance=distance)
@@ -89,15 +89,15 @@ def extract_fiducial_points(signal, r_peak, fs=500):
             W2 = window_signal[i] - window_signal[i + k]
             W[i] = W1 * W2
         if len(W) > 2 * k:
-            t_rel_idx = k + np.argmax(W[k:-k])
+            t_rel_idx = k + np.argmin(W[k:-k])
             points['T'] = qrs_offset + t_rel_idx
     return points
 
 def get_combined_features(heartbeats, r_peaks_in_beats, wavelet_name, fs=500):
     features = []
     for beat, r_peak in zip(heartbeats, r_peaks_in_beats):
-        coeffs = pywt.wavedec(beat, wavelet_name, level=4)
-        selected_coeffs = coeffs[:3]
+        coeffs = pywt.wavedec(beat, wavelet_name, level=5)
+        selected_coeffs = coeffs[:4]
         beat_features = []
         for c in selected_coeffs:
             beat_features.extend([np.mean(c), np.std(c), np.sum(np.square(c))])
